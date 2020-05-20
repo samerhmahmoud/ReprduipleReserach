@@ -1,0 +1,419 @@
+---
+title: "Ranking Severe Weather Consequences on Population Health and Economy "
+
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE
+)
+```
+
+## Synopsis
+
+
+Storms and severe weather events can cause both enormous devastations to public health and economy in communities and municipalities. Many severe events can result in fatalities, injuries, and property/crop damage. While it is impractical to prevent severe weather events from forming, a key concern is to plan and prepare for such events to the extent possible to reduce undesirable outcomes. Knowing the most potentially damaging events is a key aspect to prioritize resources during planning and policymaking.
+
+Exploring the U.S. National Oceanic and Atmospheric Administration’s, [NOAA](http://www.nws.noaa.gov/directives/), storm database that tracks the characteristics of major storms and weather events in the United States, it was possible to rank both the health impact and monetary damage value for weather events across the United States.
+This report obtained and analyzed pertinent data from NOAA and prepared the results by ranking sever weather events impact on public health and property/crop damage.  The results show that tornado has by far resulted in most fatality and injuries, while flood has caused the most economic damage. 
+ 
+
+
+
+## Research Question
+
+This report aims to answer the following  questions 
+
+  - Across the United States, which types of events are most harmful with respect to population health?
+  - Across the United States, which types of events have the greatest economic consequences?
+
+## Key Steps
+
+The following steps were followed to perform the research
+
+  - Data Processing 
+  - Data Analysis
+  - Interpretations 
+  - Conclusions 
+
+## Data Processing
+
+The data processing stage involved the following steps
+
+  - Obtaining the data,
+  - Data conditioning and filtering,
+  - Calculating pertinent parameters, and 
+  - Presentation of the findings.
+
+### Obtaining the Data
+
+```{r getlibraries, message=FALSE, warning=FALSE}
+##load libraries 
+    library(tidyverse)
+    library(lubridate)
+    library(pdftools)
+    library(stringr)
+    library(grid)
+```
+
+```{r DownloadData, warning=FALSE, cache=TRUE, paged.print=TRUE}
+# download data from the link and the contents were read directly into R using read.csv for processing.   
+
+  murl<-"https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2"
+  destfile<-"2FStormData.csv.bz2"
+  download.file(murl,destfile)
+
+## read data from the CSV file
+  dt<-read.csv(destfile)
+
+## estimate file size in MB for verificaton
+  
+  fileSize<-file.size(destfile)/1024/1024
+  datalength<-dim(dt)
+
+## format the BGN_DATE to as.DATE object and create another variable called yr to list only the year
+dt<- dt%>% mutate(BGN_DATE= as.Date(BGN_DATE,"%m/%d/%Y"))
+dt<- dt%>% mutate(yr = year(BGN_DATE))
+
+## select variables of interst  
+dt<- dt %>% select(yr,EVTYPE,FATALITIES, INJURIES,PROPDMG,PROPDMGEXP,CROPDMG,CROPDMGEXP)
+
+```
+
+The NOAA [STORM DATA](https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2FStormData.csv.bz2) was downloaded from the link for processing. The data metrics were confirmed; the database size is `r round(fileSize,digits=1)`[MB]; it contains `r datalength[1]` records and `r datalength[2]` variables. The data is reported between the years `r min(dt$yr)` and `r max(dt$yr)`. The 
+[storm data documentation](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf) provides details description of the data is directly available from the link.
+
+
+```{r GetDocumet, message=FALSE, warning=FALSE, cache=TRUE, paged.print=TRUE}
+# Downloaded document with the proper or official event types and extract table for used in the analysis.
+# The pdftools r libray wre used to read the pdf file, the boundaies of the table containing the data were maually selected  (mtable<-mypg[9:32]) after viewing  "mypage" (the cat(mydoc[6]) for example can be used to view page 6. 
+
+docurl<-"https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf"
+download.file(docurl,destfile = "NOAADoc.pdf")
+mydoc<-pdf_text("NOAADoc.pdf")
+## mypg<-cat(mydoc[6])
+mypg<-mydoc[6]
+mypg<-unlist(str_split(mypg,"\\n"))
+mtable<-mypg[9:32]
+mtable<-gsub("\\b[A-Z]\\b","\\,",mtable) 
+mtable<-gsub("\\,$","",mtable)
+mtable<-unlist(str_split(mtable,","))
+mtable<-str_sort(str_trim(str_sort(tolower(mtable))))
+
+numDocEvents<-length(mtable)
+
+```
+
+
+The raw data suggests that `r n_distinct(dt$EVTYPE)` event types were recorded; however, a description of the data and variable names presented in [NOAA storm data documentation](https://d396qusza40orc.cloudfront.net/repdata%2Fpeer2_doc%2Fpd01016005curr.pdf) on page 6 of the report has  only `r numDocEvents` event types.  
+
+Thus, one essential step was to investigate the difference between the recorded event types and the formal event type list. But, before diving into that process, it is a good idea to calculate the actual property and crop damage from the provided data to reduce the amount of data to analyze.
+
+### Data Conditioning and Filtering
+
+Prior to filtering for the pertinent data, the first step of the data conditioning was to estimate the actual dollar amount for both property and crop damage values this step was necessary to combine the variables provided in the database to meaningful quantities.
+
+```{r CalcPropandCroDamage, paged.print=TRUE}
+## As can be seen from the data, both property and crop damage records are described by two variables each; a variable set for defining a base value (PROPDMG, CROPDMG) and another variable set (PROPDMGEXP, CROPDMGEXP) for defining a scaling parameter. Based on the discussion provided in the course forum, the scaling values were mapped as shown in the code chung below in a dataframe containing an "e" for exponent and "m" for multiplier.  Thus the values from (PROPDMGEXP, CROPDMGEXP) can be read and the scaling parameter can be determined based on this mapping. 
+
+## After defining the scaling "m", the value for actual property damage and crop damage can be estimated as follow: 
+## •	ActPROPDMG = m * PROPDMG
+## •	ActCROPDMG = m * CROPDMG
+
+##After calculating ActPROPDMG and ActCROPDMG, the dataframe was mutated to include these variables and drop the other four variables (PROPDMG, CROPDMG, PROPDMGEXP, CROPDMGEXP). This reduces the size of the data to be carried. Two additional variable were calculated and the input was left out to reduce the size of the dataframe
+ 
+
+   e <- unlist(str_split("- ? + 0 1 2 3 4 5 6 7 8 B b h H k K m M"," "))
+   m <- unlist(str_split("0 0 1 10 10 10 10 10 10 10 10 10 1000000000 1000000000 100 100 1000 1000 1000000 1000000"," "))
+   n<-length(e)
+   e[n+1]<-""
+   m[n+1]<-"0"
+   mdf<-data_frame(e ,m )
+
+## loop through mdf rows. 
+## for "e" (column 1) find matching rows of the dataframe dt matching (PROPDMGEXP, CROPDMGEXP)
+## multiply the corresponding scaling "m" (column 2) by the the value of the matching (PROPDMG, CROPDMG) 
+
+  n<-dim(mdf)[1]
+  dt<-mutate(dt,ActPROPDMG=0,ActCROPDMG=0)
+  for(ii in 1:n){
+    dt[dt[,6]==as.character(mdf[ii,1]),9]<-as.numeric(mdf[ii,2])*dt[dt[,6]==as.character(mdf[ii,1]),5]
+    dt[dt[,8]==as.character(mdf[ii,1]),10]<-as.numeric(mdf[ii,2])*dt[dt[,8]==as.character(mdf[ii,1]),7]
+  }
+ 
+## reduce the dt size    
+  dt <- dt %>%  select(yr,EVTYPE,FATALITIES, INJURIES,ActPROPDMG,ActCROPDMG)
+
+```
+
+### Data Filtering
+
+Since the data set is so large and the goal here is to find which event type has the most potential damaging threat to public health and economy, the data was filtered to select only the data records that has inflected fatality, injury, property damage, or crop damage.
+
+```{r reducedata1, message=TRUE, warning=TRUE, cache=TRUE, paged.print=TRUE}
+
+## filter data to select the event type that has inflected fatality, injury, property damage, or crop damage. 
+## filter data for FATALITIES>0 | INJURIES>0 | ActPROPDMG>0 | ActCROPDMG 
+
+  dt<- dt %>% filter(FATALITIES>0 | INJURIES>0 | ActPROPDMG>0 | ActCROPDMG>0) 
+```
+
+
+
+The filtered data set still contains `r dim(dt)[1]` records, `r dim(dt)[2]` variables,  and `r n_distinct(dt$EVTYPE)` unique event types.  This is a bit better than the raw data set, but `r n_distinct(dt$EVTYPE)` event types are still too many in comparison with the official grouping that has `r numDocEvents` event types.
+
+
+### Cleaning up of data record
+
+As expected, the data set contains spelling mistakes and multiple groupings that may seem different than the event types published in the NOAA report. The anomaly or deviation in the data event types from the official list was further investigated.
+
+
+```{r cache=TRUE, paged.print=TRUE}
+
+## In the following code chunk, the different suspect anomaly/deviations in the data EVTYPE from offical list was investigated.
+
+ #The idea here is to make the EVTYPE comparable to the text in the official list that was defined in variable "mtable" earlier.  Thus the text from EVTYPE was converted into lowercase, the functions "str_trim" and "str_squish" were used to for some additional clean up. 
+
+#defined variable NEVT with lower cases and cleand to match the data in mtable
+dt$NEVT<-str_squish(str_trim(tolower(dt$EVTYPE)))
+
+# estimate the numbers of missing variable after this transformation 
+missp<-setdiff(dt$NEVT,intersect(dt$NEVT,mtable))
+
+NumMiss<-sum(dt$NEVT %in% missp)
+NumCorrect<-sum(!(dt$NEVT %in% missp))
+
+Nistinct<-n_distinct(missp)
+
+```
+
+After the initial cleaning up, it seemed that the number of event types having incorrect spelling was `r NumMiss` event type; and the number of event types have correct spelling was `r NumCorrect`. There were `r Nistinct` event types that were incorrect.
+
+Eliminating mistakes or instances in the event types to make them line up with the published NOAA list was performed.  This was the most time consuming and sensitive step that can impact the results.  It was noticed that many of the events that need corrections were related to "Thunder Storm", "Flood", "Hurricane", "Tropical Storms", among others.  The approach in this report was manually iterative.  A group of events are corrected to make them inline with the NOAA list, a comparison is made again between "corrected" and "incorrect” sets, then a new set is corrected. The process is repeated and the list of improperly labeled events shrunk            
+
+```{r paged.print=TRUE}
+
+## The dat was filtered by correcting the mistakes or insnsitancie in the EVTYPE variable and to make it inline with the the official list.  It was noticed many of the EVENTS that need to be correct had to wo with "Thunder Storm", "Flood" Hurrican", "Tropical Storms", and others.  The appoach in this report was iterative. A new "dt$fix" variable was defined to distinguised from the dt$NEVNT just to keep track of things.  some names were selected and the code shucnk below was run and the number of remaining EVTYP was reviewed to see what else to fix.  Few iteration was exectued and the list grew.  
+
+
+  dt$fix <-"dt$NEVT"  
+  dt$is.corr <-dt$NEVT %in% mtable
+
+
+  dt$fix<-gsub("winds","wind",dt$NEVT)
+
+  dt$fix[grepl("^hurricane|typhoon",dt$NEVT)] <- "hurricane (typhoon)"
+  dt$fix[grepl("^torn",dt$NEVT)] <- "tornado"
+  dt$fix[grepl("^tropical sto",dt$NEVT)] <- "tropical storm"
+
+## thunderstorm	
+  dt$fix[grepl("^thun",dt$NEVT )] <- "thunderstorm wind"
+  dt$fix[grepl("^tstm",dt$NEVT )] <- "thunderstorm wind"
+  dt$fix[grepl("^severe thu",dt$NEVT )] <- "thunderstorm wind"
+  dt$fix[grepl("^marine tstm wind",dt$NEVT )] <- "marine thunderstorm wind"
+
+
+## flood
+  dt$fix[grepl("^flas.* flood",dt$NEVT )] <- "flash flood"
+  dt$fix[grepl("^flood",dt$NEVT )] <- "flood"
+  dt$fix[grepl("^c.* flood",dt$NEVT )] <- "coastal flood"
+  dt$fix[grepl("^la.* flood",dt$NEVT )] <- "lakeshore flood"
+  dt$fix[grepl("^rive.* flood",dt$NEVT )] <- "flood"
+  dt$fix[grepl("^urb",dt$NEVT )] <- "flood"
+
+## debris flow
+  dt$fix[grepl("^lands|^mud",dt$NEVT)]<-"debris flow"
+
+  dt$fix[grepl("^ice|^glaz",dt$NEVT )] <- "ice storm"
+  dt$fix[grepl("^heavy rain",dt$NEVT )] <- "heavy rain"
+  dt$fix[grepl("^lightning",dt$NEVT )] <- "lightning"
+  dt$fix[grepl("^high wind",dt$NEVT )] <- "high wind"
+
+
+  dt$fix[grepl("^h.* snow",dt$NEVT )] <- "heavy snow"
+  dt$fix[grepl("^excessive snow",dt$NEVT )] <- "heavy snow"
+
+  dt$fix[grepl("^heavy surf|^high surf",dt$NEVT )] <- "high surf"
+
+  dt$fix[grepl("^hail",dt$NEVT )] <- "hail"
+
+  dt$fix[grepl("^waterspo",dt$NEVT )] <- "waterspout"
+ 
+  dt$fix[grepl("^ex.+ cold",dt$NEVT )] <- "extreme cold/wind chill"
+  dt$fix[grepl("^ex.+ windch",dt$NEVT )] <- "extreme cold/wind chill"
+
+  dt$fix[grepl("^cold|^wind.+ch",dt$NEVT )] <- "cold/wind chill"
+
+  dt$fix[grepl("^ex.+ heat",dt$NEVT )] <- "excessive heat"
+  dt$fix[grepl("^heat",dt$NEVT )] <- "heat"
+
+
+  dt$fix[grepl("^rip",dt$NEVT )] <- "rip current"
+
+  dt$fix[grepl("^freez.+ (rain|spray|drizzle)",dt$NEVT)] <-"sleet"
+
+  dt$fix[grepl("^winter wea",dt$NEVT)]<- "winter weather"
+  dt$fix[grepl("^winter sto",dt$NEVT)]<- "winter storm"
+
+  dt$fix[grepl("^gusty|^wind",dt$NEVT)]<-"strong wind"
+
+  dt$fix[grepl("^wi.+ire",dt$NEVT)]<-"wildfire"
+  dt$fix[grepl("^storm surge",dt$NEVT)]<-"storm surge/tide"
+  dt$fix[grepl("^fog",dt$NEVT)]<-"dense fog"
+
+  dt$fix[grepl("^frost",dt$NEVT)]<-"frost/freeze"
+
+  dt$is.corr<-dt$fix %in% mtable
+
+  ANumCorrect<-sum(dt$fix %in% mtable)
+  ANumMiss<-sum(!(dt$fix %in% mtable))
+
+  ANistinct<-n_distinct(dt$fix %in% mtable)
+
+
+  Fixed <-  n_distinct(dt$fix[ dt$fix %in%  mtable])
+
+  Remained <-  n_distinct(dt$fix[ !(dt$fix %in%  mtable)])
+
+
+```
+
+
+After going through the mapping process several times, the number of remaining unmapped event types was `r Remained` and the number of fixed event types was `r Fixed`.  So few event types remain not mapped into the NOAA list. 
+
+```{r paged.print=TRUE}
+## summerizing the impact of the unammaped events that were ignored 
+## total values 
+  tot <- dt  %>% select (FATALITIES, INJURIES,  ActPROPDMG, ActCROPDMG )  %>% 
+              colSums()
+
+## scale to billion
+  tot<-c(tot[1:2],tot[3:4]/1000000000)
+## selected evntypes 
+  slevnts <- dt  %>% filter ( fix %in% mtable) %>% 
+               select (FATALITIES, INJURIES,  ActPROPDMG, ActCROPDMG )  %>% 
+                colSums()
+## scale to billion
+  slevnts<-c(slevnts[1:2],slevnts[3:4]/1000000000)
+
+## ignored evntypes 
+  igevnts <- dt %>% filter ( ! fix %in% mtable)  %>% 
+             select (FATALITIES, INJURIES,  ActPROPDMG, ActCROPDMG )  %>%
+              colSums() 
+
+## scale to billion
+  igevnts<-c(igevnts[1:2],igevnts[3:4]/1000000000)
+
+  ## summarize 
+  evnsum<- as.data.frame(bind_rows(tot,igevnts,slevnts))
+  evnsum[4,]<-evnsum[2,]/evnsum[1,]*100
+  colnames(evnsum)<-c("FATALITIES","INJURIES","PROPDMG","CROPDMG")
+  row.names(evnsum)<-c("total","ignored","selected","Percent Impact")
+```
+ 
+The impact of the remaining events types was investigated and deemed negligible. Thus it can be seen the events that were left out do not have much consequences in terms of fatality, injury, property damage of crop damage.  The ignored event types had `r format(evnsum[4,1],digits=1)`% on estimating fatality,  `r format(evnsum[4,2],digits=1)`% on estimating injury, `r format(evnsum[4,3],digits=1)`% on estimating property damage, and `r format(evnsum[4,4],digits=1)`% on estimating crop damage.
+
+ 
+## Results
+ 
+The results were summarized for the cumulative total damage of severs weather events; a cutoff date was taken at 1985.  Figure 1 shows the impact of top 10 events on public health.  Shown in Figure 1, the colors are is the summation of both fatalities and injuries and the dark portion depicts fatalities only.  It is seen that Tornado, Thunderstorm Wind, Excessive Heat, Flood, Lightning, Heat, and Flash Flood are among the top seven events impacting public health either by causing fatality or injury.
+
+
+The impact of sever weather is presented in Figure 2 for the sever weather from 1985 to 2011.  Similar to Figure 1, the colors in Figure 2 are the summation of both property damage and crop damage with the crop damage shown in dark to represents its contributions to the total. As seen from Figure 2 the top seven events having economic impact are Flood, Hurricane (Typhoon), Storm Surge/Tide, Tornado, Hail,  Flash Flood,  Drought.    
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+res <- dt[dt$fix %in% mtable,]
+res$EVTYPE<-toupper(res$fix)
+res<-res[,1:6]
+ 
+
+
+
+
+
+
+```
+
+
+
+ 
+
+```{r echo=FALSE}
+
+res <- dt[dt$fix %in% mtable,]
+res<-res[res$yr>=1985,]
+res$EVTYPE<-toupper(res$fix)
+res<-res[,1:6]
+res$Health<-res$FATALITIES+res$INJURIES
+res$Damage<-res$ActPROPDMG+res$ActCROPDMG 
+
+
+topnum<-10
+
+
+Health_Res<-res %>% group_by(EVTYPE)%>% 
+  summarize_at(vars(FATALITIES,INJURIES,Health),list(sum)) %>% 
+  arrange(desc(Health)) %>% 
+  top_n(topnum)
+
+
+Damage_Res<-res %>% group_by(EVTYPE)%>% 
+  summarize_at(vars(ActPROPDMG,ActCROPDMG,Damage),list(sum)) %>% 
+  arrange(desc(Damage)) %>% 
+  top_n(topnum)
+
+
+Hp<-ggplot(data=Health_Res,mapping=aes(x=reorder(EVTYPE,Health)))
+  legnd_ord<- levels(with(Health_Res,reorder(EVTYPE,Health)))
+  Hp<-Hp+geom_col(aes(y=Health,fill=EVTYPE)) 
+  Hp<-Hp+geom_col(aes(y=FATALITIES))  
+  Hp+scale_fill_discrete(breaks=levels(legnd_ord))+
+   theme(legend.position = NULL)+
+    labs(tag= "Figure 1: Sever Weather Impact on Public Health" ,
+         x ="Event Type",
+         y ="Total Fatility + Injury (with Fatility is in drak grey")+
+         theme_bw()+
+         theme(legend.position = NULL,
+               plot.margin=margin(t=10,r=10,b=50,l=10) ,
+               plot.tag.position =c(0.4,-0.1)) +
+         coord_flip()
+         
+    
+ 
+ 
+ 
+Dp<-ggplot(data=Damage_Res,mapping=aes(x=reorder(EVTYPE,Damage)))
+  legnd_ordD<- levels(with(Damage_Res,reorder(EVTYPE,Damage)))
+  Dp<-Dp+geom_col(aes(y=Damage,fill=EVTYPE)) 
+  Dp<-Dp+geom_col(aes(y=ActCROPDMG)) 
+  Dp+scale_fill_discrete(breaks=levels(legnd_ordD))+
+  theme(legend.position = NULL)+
+    labs(tag= "Figure 2: Sever Weather Impact on Economy ",
+         x ="Event Type",
+         y ="Total Property + Crop Damage  (with Crop Damage is in drak grey)")+
+         theme_bw()+
+         theme(legend.position = NULL,
+               plot.margin=margin(t=12,r=10,b=40,l=10) ,
+               plot.tag.position =c(0.4,-0.1)) +
+         coord_flip()
+           
+ 
+ 
+ 
+
+
+
+
+
+```
+
+
+
+
+## Additioal Material
+The code used to do this analysis is load to git Hub on the follwoing 
+
+
